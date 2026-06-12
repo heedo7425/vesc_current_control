@@ -6,8 +6,8 @@ bench_console 의 GUI 버전. 슬라이더로 전류/속도를 넣고 큰 E-STOP
 을 사용하므로 mac 실차에서도 동일하게 동작합니다.
 
 실행:
-  python3 bench_gui.py                         # 기본 상한 10A / 2 m/s
-  python3 bench_gui.py --max-current 8 --max-speed 1.5
+  python3 bench_gui.py                         # 기본 상한 10A / 5 m/s
+  python3 bench_gui.py --max-current 8 --max-speed 3 --kp 6 --ki 15
 
 모드:
   CURRENT (직접)  : 슬라이더 전류[A] → /commands/motor/current  (PID 노드 끄고)
@@ -31,6 +31,10 @@ from python_qt_binding.QtWidgets import (
 from python_qt_binding.QtCore import Qt, QTimer
 from python_qt_binding.QtGui import QFont
 
+from rclpy.parameter import Parameter
+from rclpy.parameter_client import AsyncParameterClient
+
+PID_NODE = 'speed_pid_to_current_node'
 GAIN_DEFAULT = 3423.0
 SPEED_SIGN = -1.0  # m/s = SPEED_SIGN*state.speed/gain (vesc_to_odom 과 동일)
 
@@ -52,6 +56,22 @@ class Bridge(Node):
         self.cmd_pub = self.create_publisher(AckermannDriveStamped, 'ackermann_cmd', 10)
         self.create_subscription(VescStateStamped, 'sensors/core', self._state_cb, 10)
         self.create_subscription(Float64, 'commands/motor/current', self._cur_cb, 10)
+
+        # PID 노드 파라미터 클라이언트 (kp/ki/kd 라이브 튜닝)
+        self.pclient = AsyncParameterClient(self, PID_NODE)
+        self.pid_online = False
+
+    def set_gains(self, kp, ki, kd):
+        """PID 노드에 게인 비동기 set. 노드 미기동이면 조용히 skip."""
+        if not self.pclient.services_are_ready():
+            self.pid_online = False
+            return
+        self.pid_online = True
+        self.pclient.set_parameters([
+            Parameter('kp', Parameter.Type.DOUBLE, float(kp)),
+            Parameter('ki', Parameter.Type.DOUBLE, float(ki)),
+            Parameter('kd', Parameter.Type.DOUBLE, float(kd)),
+        ])
 
     def _state_cb(self, m):
         self.meas_speed = SPEED_SIGN * m.state.speed / self.gain
@@ -110,7 +130,7 @@ def labeled_slider(lo, hi, step, suffix, decimals):
 
 
 class BenchGui(QWidget):
-    def __init__(self, bridge, max_cur, max_spd):
+    def __init__(self, bridge, max_cur, max_spd, gains=(8.0, 20.0, 0.0)):
         super().__init__()
         self.b = bridge
         self.setWindowTitle('VESC Current Control — Bench')
@@ -156,6 +176,21 @@ class BenchGui(QWidget):
         sl.addWidget(st_wrap)
         root.addWidget(sg)
 
+        # ── PID gains (라이브 튜닝) ──
+        pg = QGroupBox('PID gains (live → speed_pid_to_current_node)')
+        pl = QGridLayout(pg)
+        kp0, ki0, kd0 = gains
+        self.kp_w, self.kp_get, self.kp_set, _ = labeled_slider(0, 50, 0.5, '', 1)
+        self.ki_w, self.ki_get, self.ki_set, _ = labeled_slider(0, 100, 1.0, '', 1)
+        self.kd_w, self.kd_get, self.kd_set, _ = labeled_slider(0, 5, 0.1, '', 2)
+        self.kp_set(kp0); self.ki_set(ki0); self.kd_set(kd0)
+        pl.addWidget(QLabel('kp'), 0, 0); pl.addWidget(self.kp_w, 0, 1)
+        pl.addWidget(QLabel('ki'), 1, 0); pl.addWidget(self.ki_w, 1, 1)
+        pl.addWidget(QLabel('kd'), 2, 0); pl.addWidget(self.kd_w, 2, 1)
+        self.lbl_pid = QLabel('PID node: (대기)')
+        pl.addWidget(self.lbl_pid, 3, 0, 1, 2)
+        root.addWidget(pg)
+
         # ── E-STOP ──
         self.estop_btn = QPushButton('E-STOP  (0)')
         self.estop_btn.setMinimumHeight(54)
@@ -192,6 +227,12 @@ class BenchGui(QWidget):
         self.t_ros.start(20)
         self.t_ui = QTimer(self); self.t_ui.timeout.connect(self._ui_tick)
         self.t_ui.start(100)
+        # 게인 1Hz 재전송 (노드가 늦게 떠도 동기 유지)
+        self.t_gain = QTimer(self); self.t_gain.timeout.connect(self._push_gains)
+        self.t_gain.start(1000)
+
+    def _push_gains(self):
+        self.b.set_gains(self.kp_get(), self.ki_get(), self.kd_get())
 
     def _mode_changed(self, *_):
         if self.rb_cur.isChecked():
@@ -230,6 +271,11 @@ class BenchGui(QWidget):
         self.lbl_vmeas.setText(f'{self.b.meas_speed:+.2f} m/s')
         self.lbl_icmd.setText(f'{self.b.cmd_current_seen:+.1f} A')
         self.lbl_imot.setText(f'{self.b.meas_current:+.1f} A')
+        if self.b.pid_online:
+            self.lbl_pid.setText(f'PID node: ● online  '
+                                 f'(kp={self.kp_get():.1f} ki={self.ki_get():.1f} kd={self.kd_get():.2f})')
+        else:
+            self.lbl_pid.setText('PID node: ○ offline (speed_pid_to_current 미기동 — 게인 전송 대기)')
 
     def closeEvent(self, ev):
         self.b.estop()
@@ -240,14 +286,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--gain', type=float, default=GAIN_DEFAULT)
     ap.add_argument('--max-current', type=float, default=10.0)
-    ap.add_argument('--max-speed', type=float, default=2.0)
+    ap.add_argument('--max-speed', type=float, default=5.0)
+    ap.add_argument('--kp', type=float, default=8.0)
+    ap.add_argument('--ki', type=float, default=20.0)
+    ap.add_argument('--kd', type=float, default=0.0)
     ap.add_argument('--selftest', action='store_true', help='1.5초 후 자동 종료(검증용)')
     args, _ = ap.parse_known_args()
 
     rclpy.init()
     bridge = Bridge(args.gain)
     app = QApplication(sys.argv)
-    gui = BenchGui(bridge, args.max_current, args.max_speed)
+    gui = BenchGui(bridge, args.max_current, args.max_speed, gains=(args.kp, args.ki, args.kd))
     gui.show()
     if args.selftest:
         QTimer.singleShot(1500, app.quit)

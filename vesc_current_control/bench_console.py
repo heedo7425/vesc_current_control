@@ -145,7 +145,7 @@ def main():
                     help='speed_to_erpm_gain (실측 환산용, 기본 3423)')
     ap.add_argument('--max-current', type=float, default=10.0,
                     help='직접 전류 입력 상한 [A] (기본 10)')
-    ap.add_argument('--max-speed', type=float, default=2.0,
+    ap.add_argument('--max-speed', type=float, default=5.0,
                     help='속도 setpoint 입력 상한 [m/s] (기본 2)')
     args, _ = ap.parse_known_args()
 

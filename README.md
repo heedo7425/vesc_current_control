@@ -10,7 +10,7 @@ VESC 속도 PID → 전류 변환 노드 + 벤치 테스트 툴 (ROS2 Jazzy).
 | executable | 설명 |
 |---|---|
 | `speed_pid_to_current` | `/ackermann_cmd`(목표속도) + `/sensors/core`(실측) → 100Hz PID → `/commands/motor/current`. 조향 servo 변환 포함. |
-| `bench_gui` | 슬라이더 GUI (전류/속도/조향 + E-STOP + 실시간 텔레메트리). python_qt_binding. |
+| `bench_gui` | 슬라이더 GUI: 전류/속도(±5 m/s)/조향 + **PID 게인(kp/ki/kd) 라이브 튜닝** + E-STOP + 실시간 텔레메트리. python_qt_binding. 게인 슬라이더는 `speed_pid_to_current_node` 에 파라미터로 즉시 반영(`add_on_set_parameters_callback`). |
 | `bench_console` | 동일 기능 터미널 버전. |
 
 ```bash

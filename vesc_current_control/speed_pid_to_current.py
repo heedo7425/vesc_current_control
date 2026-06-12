@@ -24,6 +24,7 @@ from rclpy.node import Node
 from ackermann_msgs.msg import AckermannDriveStamped
 from std_msgs.msg import Float64
 from vesc_msgs.msg import VescStateStamped
+from rcl_interfaces.msg import SetParametersResult
 
 
 def clip(x, lo, hi):
@@ -84,10 +85,25 @@ class SpeedPidToCurrent(Node):
         self.dt = 1.0 / self.rate
         self.create_timer(self.dt, self.control_loop)
 
+        # ── 런타임 파라미터 변경 콜백 (GUI 슬라이더 / ros2 param set 으로 라이브 튜닝) ──
+        self._live = {'kp', 'ki', 'kd', 'current_max', 'current_min',
+                      'current_sign', 'integral_max'}
+        self.add_on_set_parameters_callback(self._on_set_params)
+
         self.get_logger().info(
             f'speed_pid_to_current up: kp={self.kp} ki={self.ki} kd={self.kd} '
             f'I[{self.current_min},{self.current_max}]A gain={self.gain} '
             f'sign(spd={self.speed_sign},cur={self.current_sign}) rate={self.rate}Hz')
+
+    # ── 런타임 파라미터 변경 → 내부 상태 즉시 반영 ──
+    def _on_set_params(self, params):
+        attr = {'kp': 'kp', 'ki': 'ki', 'kd': 'kd',
+                'current_max': 'current_max', 'current_min': 'current_min',
+                'current_sign': 'current_sign', 'integral_max': 'integral_max'}
+        for p in params:
+            if p.name in self._live:
+                setattr(self, attr[p.name], float(p.value))
+        return SetParametersResult(successful=True)
 
     # ── callbacks ──
     def cmd_cb(self, msg: AckermannDriveStamped):
