@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""VESC 전류제어 벤치 GUI.
+
+bench_console 의 GUI 버전. 슬라이더로 전류/속도를 넣고 큰 E-STOP 버튼으로
+즉시 정지. 실측 속도/전류가 실시간 표시됩니다. rqt 가 쓰는 python_qt_binding
+을 사용하므로 mac 실차에서도 동일하게 동작합니다.
+
+실행:
+  python3 bench_gui.py                         # 기본 상한 10A / 2 m/s
+  python3 bench_gui.py --max-current 8 --max-speed 1.5
+
+모드:
+  CURRENT (직접)  : 슬라이더 전류[A] → /commands/motor/current  (PID 노드 끄고)
+  SPEED   (PID)   : 슬라이더 속도[m/s] → /ackermann_cmd          (PID 노드 켜고)
+  IDLE / E-STOP   : 전류 0
+"""
+import argparse
+import sys
+import math
+
+import rclpy
+from rclpy.node import Node
+from ackermann_msgs.msg import AckermannDriveStamped
+from std_msgs.msg import Float64
+from vesc_msgs.msg import VescStateStamped
+
+from python_qt_binding.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
+    QSlider, QDoubleSpinBox, QLabel, QPushButton, QRadioButton, QButtonGroup,
+)
+from python_qt_binding.QtCore import Qt, QTimer
+from python_qt_binding.QtGui import QFont
+
+GAIN_DEFAULT = 3423.0
+SPEED_SIGN = -1.0  # m/s = SPEED_SIGN*state.speed/gain (vesc_to_odom 과 동일)
+
+
+class Bridge(Node):
+    """ROS 통신 + 명령 상태 보관."""
+    def __init__(self, gain):
+        super().__init__('vesc_bench_gui')
+        self.gain = gain
+        self.mode = 'idle'        # 'idle' | 'current' | 'speed'
+        self.cur_cmd = 0.0
+        self.spd_cmd = 0.0
+        self.steer_cmd = 0.0      # rad
+        self.meas_speed = 0.0
+        self.meas_current = 0.0
+        self.cmd_current_seen = 0.0
+
+        self.cur_pub = self.create_publisher(Float64, 'commands/motor/current', 10)
+        self.cmd_pub = self.create_publisher(AckermannDriveStamped, 'ackermann_cmd', 10)
+        self.create_subscription(VescStateStamped, 'sensors/core', self._state_cb, 10)
+        self.create_subscription(Float64, 'commands/motor/current', self._cur_cb, 10)
+
+    def _state_cb(self, m):
+        self.meas_speed = SPEED_SIGN * m.state.speed / self.gain
+        self.meas_current = m.state.current_motor
+
+    def _cur_cb(self, m):
+        self.cmd_current_seen = m.data
+
+    def publish(self):
+        if self.mode == 'current':
+            self.cur_pub.publish(Float64(data=self.cur_cmd))
+        elif self.mode == 'speed':
+            c = AckermannDriveStamped()
+            c.drive.speed = self.spd_cmd
+            c.drive.steering_angle = self.steer_cmd
+            self.cmd_pub.publish(c)
+
+    def estop(self):
+        self.mode = 'idle'; self.cur_cmd = 0.0; self.spd_cmd = 0.0
+        self.cur_pub.publish(Float64(data=0.0))
+
+
+def labeled_slider(lo, hi, step, suffix, decimals):
+    """슬라이더 + 스핀박스 (양방향 동기). 반환: (widget, get, set, set_enabled)."""
+    box = QHBoxLayout()
+    factor = round(1.0 / step)
+    sld = QSlider(Qt.Horizontal)
+    sld.setMinimum(int(round(lo * factor)))
+    sld.setMaximum(int(round(hi * factor)))
+    sld.setValue(0)
+    spin = QDoubleSpinBox()
+    spin.setRange(lo, hi); spin.setSingleStep(step); spin.setDecimals(decimals)
+    spin.setSuffix(' ' + suffix); spin.setValue(0.0)
+
+    guard = {'busy': False}
+    def on_slider(v):
+        if guard['busy']:
+            return
+        guard['busy'] = True; spin.setValue(v / factor); guard['busy'] = False
+    def on_spin(v):
+        if guard['busy']:
+            return
+        guard['busy'] = True; sld.setValue(int(round(v * factor))); guard['busy'] = False
+    sld.valueChanged.connect(on_slider)
+    spin.valueChanged.connect(on_spin)
+
+    box.addWidget(sld, 4); box.addWidget(spin, 1)
+    w = QWidget(); w.setLayout(box)
+    def set_enabled(en):
+        sld.setEnabled(en); spin.setEnabled(en)
+    def set_val(x):
+        guard['busy'] = True
+        sld.setValue(int(round(x * factor))); spin.setValue(x)
+        guard['busy'] = False
+    return w, spin.value, set_val, set_enabled
+
+
+class BenchGui(QWidget):
+    def __init__(self, bridge, max_cur, max_spd):
+        super().__init__()
+        self.b = bridge
+        self.setWindowTitle('VESC Current Control — Bench')
+        self.setMinimumWidth(560)
+        root = QVBoxLayout(self)
+
+        # ── 모드 선택 ──
+        mode_box = QGroupBox('Mode')
+        ml = QHBoxLayout(mode_box)
+        self.rb_idle = QRadioButton('IDLE')
+        self.rb_cur = QRadioButton('CURRENT (direct)')
+        self.rb_spd = QRadioButton('SPEED (PID)')
+        self.rb_idle.setChecked(True)
+        grp = QButtonGroup(self)
+        for rb in (self.rb_idle, self.rb_cur, self.rb_spd):
+            grp.addButton(rb); ml.addWidget(rb)
+        self.rb_idle.toggled.connect(self._mode_changed)
+        self.rb_cur.toggled.connect(self._mode_changed)
+        self.rb_spd.toggled.connect(self._mode_changed)
+        root.addWidget(mode_box)
+
+        # ── 전류 슬라이더 ──
+        cg = QGroupBox(f'Current  [±{max_cur:.0f} A]')
+        cl = QVBoxLayout(cg)
+        self.cur_w, self.cur_get, self.cur_set, self.cur_en = \
+            labeled_slider(-max_cur, max_cur, 0.5, 'A', 1)
+        cl.addWidget(self.cur_w)
+        root.addWidget(cg)
+
+        # ── 속도 슬라이더 ──
+        sg = QGroupBox(f'Speed setpoint  [±{max_spd:.1f} m/s]')
+        sl = QVBoxLayout(sg)
+        self.spd_w, self.spd_get, self.spd_set, self.spd_en = \
+            labeled_slider(-max_spd, max_spd, 0.05, 'm/s', 2)
+        sl.addWidget(self.spd_w)
+        # 조향
+        st_row = QHBoxLayout()
+        st_row.addWidget(QLabel('Steering'))
+        self.steer_w, self.steer_get, self.steer_set, self.steer_en = \
+            labeled_slider(-30, 30, 1.0, 'deg', 0)
+        st_row.addWidget(self.steer_w)
+        st_wrap = QWidget(); st_wrap.setLayout(st_row)
+        sl.addWidget(st_wrap)
+        root.addWidget(sg)
+
+        # ── E-STOP ──
+        self.estop_btn = QPushButton('E-STOP  (0)')
+        self.estop_btn.setMinimumHeight(54)
+        f = QFont(); f.setPointSize(16); f.setBold(True)
+        self.estop_btn.setFont(f)
+        self.estop_btn.setStyleSheet(
+            'QPushButton{background:#c0392b;color:white;border-radius:6px;}'
+            'QPushButton:pressed{background:#e74c3c;}')
+        self.estop_btn.clicked.connect(self._estop)
+        root.addWidget(self.estop_btn)
+
+        # ── 텔레메트리 ──
+        tg = QGroupBox('Telemetry')
+        gl = QGridLayout(tg)
+        self.lbl_mode = QLabel('IDLE')
+        self.lbl_tgt = QLabel('-')
+        self.lbl_vmeas = QLabel('-')
+        self.lbl_icmd = QLabel('-')
+        self.lbl_imot = QLabel('-')
+        big = QFont(); big.setPointSize(13); big.setBold(True)
+        for w in (self.lbl_mode, self.lbl_tgt, self.lbl_vmeas, self.lbl_icmd, self.lbl_imot):
+            w.setFont(big)
+        gl.addWidget(QLabel('mode'), 0, 0);          gl.addWidget(self.lbl_mode, 0, 1)
+        gl.addWidget(QLabel('target'), 1, 0);        gl.addWidget(self.lbl_tgt, 1, 1)
+        gl.addWidget(QLabel('meas speed'), 2, 0);    gl.addWidget(self.lbl_vmeas, 2, 1)
+        gl.addWidget(QLabel('cmd current (bus)'), 3, 0); gl.addWidget(self.lbl_icmd, 3, 1)
+        gl.addWidget(QLabel('motor current'), 4, 0); gl.addWidget(self.lbl_imot, 4, 1)
+        root.addWidget(tg)
+
+        self._mode_changed()
+
+        # ── 타이머: ROS spin+publish 50Hz, UI 갱신 10Hz ──
+        self.t_ros = QTimer(self); self.t_ros.timeout.connect(self._ros_tick)
+        self.t_ros.start(20)
+        self.t_ui = QTimer(self); self.t_ui.timeout.connect(self._ui_tick)
+        self.t_ui.start(100)
+
+    def _mode_changed(self, *_):
+        if self.rb_cur.isChecked():
+            self.b.mode = 'current'
+        elif self.rb_spd.isChecked():
+            self.b.mode = 'speed'
+        else:
+            self.b.mode = 'idle'
+        self.cur_en(self.b.mode == 'current')
+        self.spd_en(self.b.mode == 'speed')
+        self.steer_en(self.b.mode == 'speed')
+
+    def _estop(self):
+        self.rb_idle.setChecked(True)
+        self.cur_set(0.0); self.spd_set(0.0)
+        self.b.estop()
+
+    def _ros_tick(self):
+        # 슬라이더 → 명령 반영
+        if self.b.mode == 'current':
+            self.b.cur_cmd = self.cur_get()
+        elif self.b.mode == 'speed':
+            self.b.spd_cmd = self.spd_get()
+            self.b.steer_cmd = self.steer_get() * math.pi / 180.0
+        rclpy.spin_once(self.b, timeout_sec=0.0)
+        self.b.publish()
+
+    def _ui_tick(self):
+        self.lbl_mode.setText(self.b.mode.upper())
+        if self.b.mode == 'current':
+            self.lbl_tgt.setText(f'{self.b.cur_cmd:+.1f} A')
+        elif self.b.mode == 'speed':
+            self.lbl_tgt.setText(f'{self.b.spd_cmd:+.2f} m/s   {math.degrees(self.b.steer_cmd):+.0f}°')
+        else:
+            self.lbl_tgt.setText('—')
+        self.lbl_vmeas.setText(f'{self.b.meas_speed:+.2f} m/s')
+        self.lbl_icmd.setText(f'{self.b.cmd_current_seen:+.1f} A')
+        self.lbl_imot.setText(f'{self.b.meas_current:+.1f} A')
+
+    def closeEvent(self, ev):
+        self.b.estop()
+        ev.accept()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--gain', type=float, default=GAIN_DEFAULT)
+    ap.add_argument('--max-current', type=float, default=10.0)
+    ap.add_argument('--max-speed', type=float, default=2.0)
+    ap.add_argument('--selftest', action='store_true', help='1.5초 후 자동 종료(검증용)')
+    args, _ = ap.parse_known_args()
+
+    rclpy.init()
+    bridge = Bridge(args.gain)
+    app = QApplication(sys.argv)
+    gui = BenchGui(bridge, args.max_current, args.max_speed)
+    gui.show()
+    if args.selftest:
+        QTimer.singleShot(1500, app.quit)
+    try:
+        app.exec_() if hasattr(app, 'exec_') else app.exec()
+    finally:
+        bridge.estop()
+        bridge.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
