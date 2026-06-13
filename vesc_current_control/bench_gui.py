@@ -28,13 +28,17 @@ from python_qt_binding.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QSlider, QDoubleSpinBox, QLabel, QPushButton, QRadioButton, QButtonGroup,
 )
-from python_qt_binding.QtCore import Qt, QTimer
-from python_qt_binding.QtGui import QFont
+from python_qt_binding.QtCore import Qt, QTimer, QPointF
+from python_qt_binding.QtGui import QFont, QPainter, QColor, QPen
 
 from rclpy.parameter import Parameter
 from rclpy.parameter_client import AsyncParameterClient
 
+import time
+from collections import deque
+
 PID_NODE = 'speed_pid_to_current_node'
+PLOT_WINDOW = 10.0   # 그래프 시간창 [s]
 GAIN_DEFAULT = 3423.0
 SPEED_SIGN = -1.0  # m/s = SPEED_SIGN*state.speed/gain (vesc_to_odom 과 동일)
 
@@ -129,6 +133,79 @@ def labeled_slider(lo, hi, step, suffix, decimals):
     return w, spin.value, set_val, set_enabled
 
 
+class StripChart(QWidget):
+    """롤링 시계열 그래프: 목표속도/실측속도(m/s, 좌축) + 지령전류(A, 우축).
+
+    의존성 없이 QPainter 로 직접 그림 (pyqtgraph/matplotlib 불필요).
+    """
+    def __init__(self, v_range, i_range):
+        super().__init__()
+        self.setMinimumHeight(190)
+        self.v_range = max(0.5, v_range)   # 속도 좌축 ±range
+        self.i_range = max(5.0, i_range)   # 전류 우축 ±range
+        self.data = deque()                # (t, target_v, meas_v, cmd_i)
+        self.t0 = time.monotonic()
+
+    def push(self, target_v, meas_v, cmd_i):
+        t = time.monotonic() - self.t0
+        self.data.append((t, target_v, meas_v, cmd_i))
+        while self.data and t - self.data[0][0] > PLOT_WINDOW:
+            self.data.popleft()
+        # 전류 우축 자동확장
+        ai = abs(cmd_i)
+        if ai > self.i_range:
+            self.i_range = ai * 1.15
+        self.update()
+
+    def paintEvent(self, _ev):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        W, H = self.width(), self.height()
+        ml, mr, mt, mb = 44, 44, 14, 18
+        x0, x1 = ml, W - mr
+        y0, y1 = mt, H - mb
+        midy = (y0 + y1) / 2.0
+        qp.fillRect(self.rect(), QColor(24, 26, 33))
+        # 0 기준선
+        qp.setPen(QPen(QColor(80, 84, 96), 1))
+        qp.drawLine(int(x0), int(midy), int(x1), int(midy))
+        qp.setPen(QPen(QColor(120, 124, 136), 1))
+        qp.drawText(2, int(midy) + 4, '0')
+        # 축 라벨
+        qp.setPen(QColor(110, 200, 110))
+        qp.drawText(2, y0 + 8, f'{self.v_range:.1f}')
+        qp.drawText(2, y1, f'-{self.v_range:.1f}')
+        qp.setPen(QColor(235, 150, 70))
+        qp.drawText(W - mr + 4, y0 + 8, f'{self.i_range:.0f}A')
+        qp.drawText(W - mr + 4, y1, f'-{self.i_range:.0f}')
+
+        if len(self.data) < 2:
+            return
+        tnow = self.data[-1][0]
+        tmin = tnow - PLOT_WINDOW
+
+        def xof(t):
+            return x0 + (t - tmin) / PLOT_WINDOW * (x1 - x0)
+
+        def yof(val, rng):
+            v = max(-rng, min(rng, val))
+            return midy - (v / rng) * (y1 - y0) / 2.0
+
+        def draw(series_idx, rng, color, width):
+            qp.setPen(QPen(color, width))
+            pts = [QPointF(xof(d[0]), yof(d[series_idx], rng)) for d in self.data]
+            for a, b in zip(pts, pts[1:]):
+                qp.drawLine(a, b)
+
+        draw(1, self.v_range, QColor(90, 170, 255), 1.5)   # target v (파랑)
+        draw(2, self.v_range, QColor(90, 220, 110), 2.0)   # meas v (초록)
+        draw(3, self.i_range, QColor(235, 150, 70), 2.0)   # current (주황)
+        # 범례
+        qp.setPen(QColor(90, 170, 255)); qp.drawText(x0 + 6, y0 + 10, 'target v')
+        qp.setPen(QColor(90, 220, 110)); qp.drawText(x0 + 70, y0 + 10, 'meas v')
+        qp.setPen(QColor(235, 150, 70)); qp.drawText(x0 + 130, y0 + 10, 'current')
+
+
 class BenchGui(QWidget):
     def __init__(self, bridge, max_cur, max_spd, gains=(8.0, 20.0, 0.0)):
         super().__init__()
@@ -174,6 +251,16 @@ class BenchGui(QWidget):
         st_row.addWidget(self.steer_w)
         st_wrap = QWidget(); st_wrap.setLayout(st_row)
         sl.addWidget(st_wrap)
+        # step 프리셋 버튼 (깔끔한 step 입력 → 응답 관찰용)
+        step_row = QHBoxLayout()
+        step_row.addWidget(QLabel('step →'))
+        for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+            v = round(max_spd * frac, 2)
+            btn = QPushButton(f'{v:g}')
+            btn.clicked.connect(lambda _checked=False, val=v: self._step_speed(val))
+            step_row.addWidget(btn)
+        step_wrap = QWidget(); step_wrap.setLayout(step_row)
+        sl.addWidget(step_wrap)
         root.addWidget(sg)
 
         # ── PID gains (라이브 튜닝) ──
@@ -220,6 +307,13 @@ class BenchGui(QWidget):
         gl.addWidget(QLabel('motor current'), 4, 0); gl.addWidget(self.lbl_imot, 4, 1)
         root.addWidget(tg)
 
+        # ── 실시간 그래프 (목표/실측 속도 + 전류, 10초 창) ──
+        chart_box = QGroupBox(f'Response  (최근 {PLOT_WINDOW:.0f}s)')
+        cbl = QVBoxLayout(chart_box)
+        self.chart = StripChart(v_range=max_spd, i_range=max_cur)
+        cbl.addWidget(self.chart)
+        root.addWidget(chart_box)
+
         self._mode_changed()
 
         # ── 타이머: ROS spin+publish 50Hz, UI 갱신 10Hz ──
@@ -233,6 +327,11 @@ class BenchGui(QWidget):
 
     def _push_gains(self):
         self.b.set_gains(self.kp_get(), self.ki_get(), self.kd_get())
+
+    def _step_speed(self, val):
+        """프리셋 버튼: SPEED 모드로 전환하고 목표속도를 즉시 val 로 (깔끔한 step)."""
+        self.rb_spd.setChecked(True)
+        self.spd_set(val)
 
     def _mode_changed(self, *_):
         if self.rb_cur.isChecked():
@@ -276,6 +375,9 @@ class BenchGui(QWidget):
                                  f'(kp={self.kp_get():.1f} ki={self.ki_get():.1f} kd={self.kd_get():.2f})')
         else:
             self.lbl_pid.setText('PID node: ○ offline (speed_pid_to_current 미기동 — 게인 전송 대기)')
+        # 그래프 갱신: 목표속도(모드에 따라) / 실측속도 / 지령전류
+        tv = self.b.spd_cmd if self.b.mode == 'speed' else 0.0
+        self.chart.push(tv, self.b.meas_speed, self.b.cmd_current_seen)
 
     def closeEvent(self, ev):
         self.b.estop()
