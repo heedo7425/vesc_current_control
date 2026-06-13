@@ -26,6 +26,7 @@ setup(
             'speed_pid_to_current = vesc_current_control.speed_pid_to_current:main',
             'bench_gui = vesc_current_control.bench_gui:main',
             'bench_console = vesc_current_control.bench_console:main',
+            'fake_vesc = vesc_current_control.fake_vesc:main',
         ],
     },
 )
