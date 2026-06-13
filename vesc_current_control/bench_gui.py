@@ -27,6 +27,7 @@ from vesc_msgs.msg import VescStateStamped
 from python_qt_binding.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QSlider, QDoubleSpinBox, QLabel, QPushButton, QRadioButton, QButtonGroup,
+    QScrollArea,
 )
 from python_qt_binding.QtCore import Qt, QTimer, QPointF
 from python_qt_binding.QtGui import QFont, QPainter, QColor, QPen
@@ -76,6 +77,15 @@ class Bridge(Node):
             Parameter('ki', Parameter.Type.DOUBLE, float(ki)),
             Parameter('kd', Parameter.Type.DOUBLE, float(kd)),
         ])
+
+    def fetch_gains(self):
+        """노드의 현재 kp/ki/kd 를 비동기로 읽어옴 (연결 시 1회, 노드=source of truth).
+        준비 안 됐으면 None."""
+        if not self.pclient.services_are_ready():
+            self.pid_online = False
+            return None
+        self.pid_online = True
+        return self.pclient.get_parameters(['kp', 'ki', 'kd'])
 
     def _state_cb(self, m):
         self.meas_speed = SPEED_SIGN * m.state.speed / self.gain
@@ -140,7 +150,7 @@ class StripChart(QWidget):
     """
     def __init__(self, v_range, i_range):
         super().__init__()
-        self.setMinimumHeight(190)
+        self.setMinimumHeight(150)
         self.v_range = max(0.5, v_range)   # 속도 좌축 ±range
         self.i_range = max(5.0, i_range)   # 전류 우축 ±range
         self.data = deque()                # (t, target_v, meas_v, cmd_i)
@@ -321,11 +331,29 @@ class BenchGui(QWidget):
         self.t_ros.start(20)
         self.t_ui = QTimer(self); self.t_ui.timeout.connect(self._ui_tick)
         self.t_ui.start(100)
-        # 게인 1Hz 재전송 (노드가 늦게 떠도 동기 유지)
-        self.t_gain = QTimer(self); self.t_gain.timeout.connect(self._push_gains)
+        # 게인 동기 1Hz: 연결 시 노드값을 읽어 슬라이더에 1회 반영(노드=source of
+        # truth) → 그 다음부터 슬라이더값을 노드에 push (사용자 튜닝이 노드를 바꿈)
+        self._gain_synced = False
+        self._gain_future = None
+        self.t_gain = QTimer(self); self.t_gain.timeout.connect(self._gain_tick)
         self.t_gain.start(1000)
 
-    def _push_gains(self):
+    def _gain_tick(self):
+        if not self._gain_synced:
+            # 1) 연결되면 노드의 현재 kp/ki/kd 를 읽어와 슬라이더에 반영
+            if self._gain_future is None:
+                self._gain_future = self.b.fetch_gains()
+            elif self._gain_future.done():
+                try:
+                    vals = self._gain_future.result().values
+                    self.kp_set(vals[0].double_value)
+                    self.ki_set(vals[1].double_value)
+                    self.kd_set(vals[2].double_value)
+                except Exception:
+                    pass
+                self._gain_synced = True
+            return
+        # 2) 동기 후엔 슬라이더값을 노드에 push (사용자가 움직이면 반영)
         self.b.set_gains(self.kp_get(), self.ki_get(), self.kd_get())
 
     def _step_speed(self, val):
@@ -399,7 +427,18 @@ def main():
     bridge = Bridge(args.gain)
     app = QApplication(sys.argv)
     gui = BenchGui(bridge, args.max_current, args.max_speed, gains=(args.kp, args.ki, args.kd))
-    gui.show()
+
+    # 작은 화면(13" 등)에서 창이 잘리지 않게 스크롤영역으로 감싸고 가용화면에 맞춤
+    scroll = QScrollArea()
+    scroll.setWidget(gui)
+    scroll.setWidgetResizable(True)
+    scroll.setWindowTitle('VESC Current Control — Bench')
+    avail = app.primaryScreen().availableGeometry()
+    want_h = gui.sizeHint().height() + 4
+    scroll.resize(min(600, avail.width() - 40),
+                  min(want_h, avail.height() - 60))
+    scroll.show()
+    app.aboutToQuit.connect(bridge.estop)   # 창 닫힘 시 0 (gui.closeEvent 대체)
     if args.selftest:
         QTimer.singleShot(1500, app.quit)
     try:
