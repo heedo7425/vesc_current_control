@@ -6,7 +6,7 @@ bench_console 의 GUI 버전. 슬라이더로 전류/속도를 넣고 큰 E-STOP
 을 사용하므로 mac 실차에서도 동일하게 동작합니다.
 
 실행:
-  python3 bench_gui.py                         # 기본 상한 10A / 5 m/s
+  python3 bench_gui.py                         # 기본 상한 10A / 10 m/s
   python3 bench_gui.py --max-current 8 --max-speed 3 --kp 6 --ki 15
 
 모드:
@@ -388,7 +388,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--gain', type=float, default=GAIN_DEFAULT)
     ap.add_argument('--max-current', type=float, default=10.0)
-    ap.add_argument('--max-speed', type=float, default=5.0)
+    ap.add_argument('--max-speed', type=float, default=10.0)
     ap.add_argument('--kp', type=float, default=8.0)
     ap.add_argument('--ki', type=float, default=20.0)
     ap.add_argument('--kd', type=float, default=0.0)
