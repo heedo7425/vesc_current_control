@@ -33,6 +33,27 @@ kp/ki/kd 슬라이더로 라이브 튜닝, `E-STOP` 으로 즉시 0.
 > ⚠️ `fake_vesc` 는 toy plant(실제 모터/차량 아님). 로직·GUI·회생부호 확인용이며,
 > PID 게인은 실차(벤치)에서 다시 잡아야 한다.
 
+## 실차 벤치 (휠 공중 — 진짜 VESC)
+
+```bash
+# vesc_driver(시리얼) + speed_pid_to_current 동시 기동. ackermann_to_vesc 안 띄움.
+ros2 launch vesc_current_control bench_real.launch.py     # 터미널1
+ros2 run   vesc_current_control bench_gui                 # 터미널2
+```
+
+전제(맥/실차 워크스페이스에 있어야 함): `vesc_driver`(시리얼 드라이버), `vesc_msgs`,
+시리얼 포트 연결(vesc_config.yaml 의 `port`). 게인/전류 한계는 **보수적 기본값**
+(kp3/ki6, PID 전류 ±12/−8A, 드라이버 −15~30A) — GUI 로 올려가며 튜닝.
+
+순서:
+1. **바퀴 들고** launch → `bench_gui` `CURRENT` 모드 `+2A` → **전진 방향 확인**.
+   뒤로 돌면 launch 의 `current_sign:=-1.0` (또는 speed_pid.yaml).
+2. `SPEED` 0.5~1 m/s 저속 폐루프 → 그래프로 전류 추종 확인, kp/ki 튜닝.
+3. 안정되면 속도/전류 한계 올림.
+
+> ⚠️ 회생제동(음전류)이 실제 모터까지 가려면 vesc_driver `current_min` 이 음수여야 함.
+> bench_real.launch.py 가 `driver_current_min:=-15.0` 으로 override 함(기본 vesc_config 는 0=잘림).
+
 ## 노드 / 실행
 
 | executable | 설명 |
