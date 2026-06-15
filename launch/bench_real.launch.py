@@ -34,12 +34,14 @@ def generate_launch_description():
     kd = LaunchConfiguration('kd')
 
     return LaunchDescription([
-        # vesc_config: 시리얼 포트/servo/gain 등 실차 파라미터 (스택의 vesc_config.yaml)
+        # vesc_config: 시리얼 포트/servo/gain 등 vesc_driver 파라미터.
+        # 기본은 이 패키지 동봉 사본(자립) — 실차 스택 것을 쓰려면 vesc_config:=<경로>.
         DeclareLaunchArgument(
             'vesc_config',
             default_value=PathJoinSubstitution([
-                FindPackageShare('vesc_driver_mac'), 'config', 'vesc_config.yaml']),
-            description='실차 vesc_config.yaml 경로 (포트/servo/gain).'),
+                FindPackageShare('vesc_current_control'), 'config', 'vesc_config.yaml']),
+            description='vesc_driver 용 vesc_config.yaml 경로 (포트/servo/limit). '
+                        '기본=패키지 동봉본. 실차 스택 것 쓰려면 인자로 지정.'),
         # 드라이버 전류 한계 — 회생 위해 min 음수. 처음엔 보수적으로.
         DeclareLaunchArgument('driver_current_min', default_value='-15.0',
                               description='vesc_driver current_min [A]. 음수=회생 허용.'),
