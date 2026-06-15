@@ -15,6 +15,7 @@ bench_console 의 GUI 버전. 슬라이더로 전류/속도를 넣고 큰 E-STOP
   IDLE / E-STOP   : 전류 0
 """
 import argparse
+import signal
 import sys
 import math
 
@@ -95,6 +96,8 @@ class Bridge(Node):
         self.cmd_current_seen = m.data
 
     def publish(self):
+        if not rclpy.ok():
+            return
         if self.mode == 'current':
             self.cur_pub.publish(Float64(data=self.cur_cmd))
         elif self.mode == 'speed':
@@ -339,6 +342,8 @@ class BenchGui(QWidget):
         self.t_gain.start(1000)
 
     def _gain_tick(self):
+        if not rclpy.ok():
+            return
         if not self._gain_synced:
             # 1) 연결되면 노드의 현재 kp/ki/kd 를 읽어와 슬라이더에 반영
             if self._gain_future is None:
@@ -378,6 +383,8 @@ class BenchGui(QWidget):
         self.b.estop()
 
     def _ros_tick(self):
+        if not rclpy.ok():        # 종료 레이스 가드 (Ctrl-C 후 타이머 1회 더 발화)
+            return
         # 슬라이더 → 명령 반영
         if self.b.mode == 'current':
             self.b.cur_cmd = self.cur_get()
@@ -423,7 +430,14 @@ def main():
     ap.add_argument('--selftest', action='store_true', help='1.5초 후 자동 종료(검증용)')
     args, _ = ap.parse_known_args()
 
-    rclpy.init()
+    # rclpy 의 SIGINT 핸들러 비활성화 → Ctrl-C 를 우리가 받아 Qt 를 깨끗이 종료
+    # (rclpy 핸들러가 컨텍스트를 먼저 파괴하고 Qt 타이머가 죽은 컨텍스트에 publish →
+    #  RCLError/Abort 하던 레이스 제거). 종료는 finally 에서 순서대로.
+    try:
+        from rclpy.signals import SignalHandlerOptions
+        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    except Exception:
+        rclpy.init()
     bridge = Bridge(args.gain)
     app = QApplication(sys.argv)
     gui = BenchGui(bridge, args.max_current, args.max_speed, gains=(args.kp, args.ki, args.kd))
@@ -439,11 +453,21 @@ def main():
                   min(want_h, avail.height() - 60))
     scroll.show()
     app.aboutToQuit.connect(bridge.estop)   # 창 닫힘 시 0 (gui.closeEvent 대체)
+
+    # Ctrl-C(SIGINT) → Qt 종료. Qt 이벤트루프 중엔 파이썬이 시그널을 못 받으므로
+    # 빈 heartbeat 타이머로 인터프리터가 주기적으로 깨어 시그널을 처리하게 함.
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    signal.signal(signal.SIGTERM, lambda *_: app.quit())
+    hb = QTimer(); hb.timeout.connect(lambda: None); hb.start(200)
+
     if args.selftest:
         QTimer.singleShot(1500, app.quit)
     try:
         app.exec_() if hasattr(app, 'exec_') else app.exec()
     finally:
+        # 타이머 먼저 정지 → 죽은 컨텍스트 접근 차단
+        for t in (gui.t_ros, gui.t_ui, gui.t_gain):
+            t.stop()
         bridge.estop()
         bridge.destroy_node()
         if rclpy.ok():
