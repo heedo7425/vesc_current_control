@@ -19,22 +19,28 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+
+def farg(name):
+    """launch arg 를 float 파라미터로 강제 변환 (정수 입력도 DOUBLE 로 — 타입거부 방지)."""
+    return ParameterValue(LaunchConfiguration(name), value_type=float)
 
 
 def generate_launch_description():
     vesc_config = LaunchConfiguration('vesc_config')
-    drv_imin = LaunchConfiguration('driver_current_min')
-    drv_imax = LaunchConfiguration('driver_current_max')
-    pid_imax = LaunchConfiguration('pid_current_max')
-    pid_imin = LaunchConfiguration('pid_current_min')
-    gain = LaunchConfiguration('speed_to_erpm_gain')
-    kp = LaunchConfiguration('kp')
-    ki = LaunchConfiguration('ki')
-    kd = LaunchConfiguration('kd')
-    speed_sign = LaunchConfiguration('speed_sign')
-    current_sign = LaunchConfiguration('current_sign')
-    max_abs_speed = LaunchConfiguration('max_abs_speed')
+    drv_imin = farg('driver_current_min')
+    drv_imax = farg('driver_current_max')
+    pid_imax = farg('pid_current_max')
+    pid_imin = farg('pid_current_min')
+    gain = farg('speed_to_erpm_gain')
+    kp = farg('kp')
+    ki = farg('ki')
+    kd = farg('kd')
+    speed_sign = farg('speed_sign')
+    current_sign = farg('current_sign')
+    max_abs_speed = farg('max_abs_speed')
 
     return LaunchDescription([
         # vesc_config: 시리얼 포트/servo/gain 등 vesc_driver 파라미터.
@@ -45,14 +51,15 @@ def generate_launch_description():
                 FindPackageShare('vesc_current_control'), 'config', 'vesc_config.yaml']),
             description='vesc_driver 용 vesc_config.yaml 경로 (포트/servo/limit). '
                         '기본=패키지 동봉본. 실차 스택 것 쓰려면 인자로 지정.'),
-        # 드라이버 전류 한계 — 회생 위해 min 음수. 처음엔 보수적으로.
-        DeclareLaunchArgument('driver_current_min', default_value='-15.0',
-                              description='vesc_driver current_min [A]. 음수=회생 허용.'),
-        DeclareLaunchArgument('driver_current_max', default_value='30.0',
-                              description='vesc_driver current_max [A].'),
-        # PID 노드 출력 전류 한계 (드라이버 한계 안쪽)
-        DeclareLaunchArgument('pid_current_max', default_value='12.0'),
-        DeclareLaunchArgument('pid_current_min', default_value='-8.0'),
+        # 드라이버 전류 한계 — 회생 위해 min 음수. 레이스용 상향(펌웨어 모터±100/회생-60 안쪽).
+        DeclareLaunchArgument('driver_current_min', default_value='-55.0',
+                              description='vesc_driver current_min [A]. 음수=회생(펌웨어 -60 안쪽).'),
+        DeclareLaunchArgument('driver_current_max', default_value='90.0',
+                              description='vesc_driver current_max [A] (펌웨어 100 안쪽).'),
+        # PID 노드 출력 전류 한계 (드라이버 한계 안쪽). 레이스 가속 위해 상향.
+        # ★첫 실차 테스트는 작게: pid_current_max:=20 처럼 낮춰 시작 후 올릴 것.
+        DeclareLaunchArgument('pid_current_max', default_value='60.0'),
+        DeclareLaunchArgument('pid_current_min', default_value='-40.0'),
         DeclareLaunchArgument('speed_to_erpm_gain', default_value='3423.0'),
         # 보수적 시작 게인 (fake plant 의 28/55 와 무관 — 실차는 낮게 시작해 올림)
         DeclareLaunchArgument('kp', default_value='3.0'),
@@ -64,8 +71,9 @@ def generate_launch_description():
         DeclareLaunchArgument('current_sign', default_value='1.0',
                               description='전류부호↔진행방향. +전류가 후진이면 -1.0.'),
         # ★폭주 안전가드: |실측속도| 가 이 값 초과면 전류 0 (부호 어긋남 시 휠 폭주 차단)
-        DeclareLaunchArgument('max_abs_speed', default_value='4.0',
-                              description='실측속도 절대값 한계[m/s]. 초과 시 전류 0. 0=비활성.'),
+        DeclareLaunchArgument('max_abs_speed', default_value='12.0',
+                              description='실측속도 절대값 한계[m/s]. 초과 시 전류 0(latch). '
+                                          '레이스 최고속 위로 둘 것(부호어긋남/발산만 차단). 0=비활성.'),
 
         # ── 진짜 VESC 드라이버 (시리얼). current_min/max override 로 회생 허용 ──
         Node(

@@ -15,15 +15,17 @@ speed_pid_to_current_node:
     kd: 0.0
 
     # 전류 출력 한계 [A]. current_min 음수 = 회생제동 허용.
-    # vesc_driver 의 current_limit_ (current_max/min) 안쪽으로 둘 것.
-    current_max: 40.0
-    current_min: -20.0
+    # 레이스용 상향(차 구동 ~15-20A 필요). vesc_driver current_limit_ +
+    # 펌웨어 캡(모터±100/회생-60) 안쪽. 첫 테스트는 launch arg 로 낮춰 시작.
+    current_max: 60.0
+    current_min: -40.0
     current_sign: 1.0         # 전류부호↔진행방향: 벤치 확인 후 필요시 -1.0
 
-    integral_max: 30.0        # 적분 기여 전류 한계 [A] (anti-windup)
+    integral_max: 50.0        # 적분 기여 전류 한계 [A] (anti-windup) — current_max 상향에 맞춤
     control_rate: 100.0       # PID 주기 [Hz]
     cmd_timeout: 0.3          # ackermann_cmd 끊기면 전류 0 [s]
     stop_speed_threshold: 0.05
+    max_abs_speed: 12.0       # 폭주 가드[m/s] — 레이스 최고속 위로(부호어긋남만 차단)
 
     # 조향(servo) — ackermann_to_vesc 와 동일값 (vesc_config.yaml 기준)
     steering_angle_to_servo_gain: 0.5135

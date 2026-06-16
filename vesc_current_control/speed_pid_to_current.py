@@ -46,12 +46,14 @@ class SpeedPidToCurrent(Node):
         self.kd = self.declare_parameter('kd', 0.0).value
 
         # ── 전류 출력 한계 [A] (current_min 음수 = 회생제동) ──
-        self.current_max = self.declare_parameter('current_max', 40.0).value
-        self.current_min = self.declare_parameter('current_min', -20.0).value
+        # 레이스용 상향(차 구동에 ~15-20A 필요, 펌웨어 캡 모터±100/회생-60 안쪽).
+        # 첫 테스트는 launch arg 로 낮춰 시작 권장.
+        self.current_max = self.declare_parameter('current_max', 60.0).value
+        self.current_min = self.declare_parameter('current_min', -40.0).value
         self.current_sign = self.declare_parameter('current_sign', 1.0).value
 
-        # ── 적분 anti-windup 한계 (전류 단위) ──
-        self.integral_max = self.declare_parameter('integral_max', 30.0).value
+        # ── 적분 anti-windup 한계 (전류 단위) ── 캡 상향에 맞춰 50 (고속 유지전류 확보)
+        self.integral_max = self.declare_parameter('integral_max', 50.0).value
         self.enabled = self.declare_parameter('enabled', True).value
 
         # ── 제어 주기 / 안전 ──
