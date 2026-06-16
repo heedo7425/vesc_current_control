@@ -46,10 +46,10 @@ class SpeedPidToCurrent(Node):
         self.kd = self.declare_parameter('kd', 0.0).value
 
         # ── 전류 출력 한계 [A] (current_min 음수 = 회생제동) ──
-        # 레이스용 상향(차 구동에 ~15-20A 필요, 펌웨어 캡 모터±100/회생-60 안쪽).
-        # 첫 테스트는 launch arg 로 낮춰 시작 권장.
-        self.current_max = self.declare_parameter('current_max', 60.0).value
-        self.current_min = self.declare_parameter('current_min', -40.0).value
+        # vesc_driver 캡(bench_real 기본 90/-55)과 동일하게 맞춤 — PID 가 드라이버
+        # 풀레인지 사용. 펌웨어 모터±100/회생-60 안쪽. 첫 테스트는 launch arg 로 낮춰 시작.
+        self.current_max = self.declare_parameter('current_max', 90.0).value
+        self.current_min = self.declare_parameter('current_min', -55.0).value
         self.current_sign = self.declare_parameter('current_sign', 1.0).value
 
         # ── 적분 anti-windup 한계 (전류 단위) ── 캡 상향에 맞춰 50 (고속 유지전류 확보)

@@ -15,10 +15,10 @@ speed_pid_to_current_node:
     kd: 0.0
 
     # 전류 출력 한계 [A]. current_min 음수 = 회생제동 허용.
-    # 레이스용 상향(차 구동 ~15-20A 필요). vesc_driver current_limit_ +
-    # 펌웨어 캡(모터±100/회생-60) 안쪽. 첫 테스트는 launch arg 로 낮춰 시작.
-    current_max: 60.0
-    current_min: -40.0
+    # vesc_driver 캡(bench_real 기본 90/-55)과 동일. 펌웨어 모터±100/회생-60 안쪽.
+    # 첫 테스트는 launch arg 로 낮춰 시작.
+    current_max: 90.0
+    current_min: -55.0
     current_sign: 1.0         # 전류부호↔진행방향: 벤치 확인 후 필요시 -1.0
 
     integral_max: 50.0        # 적분 기여 전류 한계 [A] (anti-windup) — current_max 상향에 맞춤

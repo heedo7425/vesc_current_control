@@ -56,10 +56,10 @@ def generate_launch_description():
                               description='vesc_driver current_min [A]. 음수=회생(펌웨어 -60 안쪽).'),
         DeclareLaunchArgument('driver_current_max', default_value='90.0',
                               description='vesc_driver current_max [A] (펌웨어 100 안쪽).'),
-        # PID 노드 출력 전류 한계 (드라이버 한계 안쪽). 레이스 가속 위해 상향.
+        # PID 노드 출력 전류 한계 = 드라이버 캡과 동일(90/-55) → PID 가 드라이버 풀레인지 사용.
         # ★첫 실차 테스트는 작게: pid_current_max:=20 처럼 낮춰 시작 후 올릴 것.
-        DeclareLaunchArgument('pid_current_max', default_value='60.0'),
-        DeclareLaunchArgument('pid_current_min', default_value='-40.0'),
+        DeclareLaunchArgument('pid_current_max', default_value='90.0'),
+        DeclareLaunchArgument('pid_current_min', default_value='-55.0'),
         DeclareLaunchArgument('speed_to_erpm_gain', default_value='3423.0'),
         # 보수적 시작 게인 (fake plant 의 28/55 와 무관 — 실차는 낮게 시작해 올림)
         DeclareLaunchArgument('kp', default_value='3.0'),
