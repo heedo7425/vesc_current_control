@@ -28,7 +28,7 @@ from vesc_msgs.msg import VescStateStamped
 from python_qt_binding.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QSlider, QDoubleSpinBox, QLabel, QPushButton, QRadioButton, QButtonGroup,
-    QScrollArea,
+    QScrollArea, QSizePolicy,
 )
 from python_qt_binding.QtCore import Qt, QTimer, QPointF
 from python_qt_binding.QtGui import QFont, QPainter, QColor, QPen
@@ -171,6 +171,8 @@ class StripChart(QWidget):
     def __init__(self, v_range, i_range):
         super().__init__()
         self.setMinimumHeight(150)
+        self.setMinimumWidth(440)   # 우측 넓은 그래프
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.v_range = max(0.5, v_range)   # 속도 좌축 ±range
         self.i_range = max(5.0, i_range)   # 전류 우축 ±range
         self.data = deque()                # (t, target_v, meas_v, cmd_i)
@@ -259,10 +261,11 @@ class BenchGui(QWidget):
         self.rb_spd.toggled.connect(self._mode_changed)
         root.addWidget(mode_box)
 
-        # ── 2단 본문 (좌: 주행입력+텔레, 우: 튜닝) — 세로 길이 축소 ──
+        # ── 본문: 좌=컨트롤(2 하위컬럼, 높이 억제), 우=응답그래프(남는 폭 전부, 넓게) ──
         cols = QHBoxLayout()
-        left = QVBoxLayout(); right = QVBoxLayout()
-        cols.addLayout(left, 1); cols.addLayout(right, 1)
+        la = QVBoxLayout(); lb = QVBoxLayout()   # 컨트롤 좌/우 하위컬럼
+        ctrl = QHBoxLayout(); ctrl.addLayout(la); ctrl.addLayout(lb)
+        cols.addLayout(ctrl, 0)
         root.addLayout(cols)
 
         # [좌] 전류 직접 명령 슬라이더
@@ -271,7 +274,7 @@ class BenchGui(QWidget):
         self.cur_w, self.cur_get, self.cur_set, self.cur_en = \
             labeled_slider(-max_cur, max_cur, 0.5, 'A', 1)
         cl.addWidget(self.cur_w)
-        left.addWidget(cg)
+        la.addWidget(cg)
 
         # [좌] 속도 setpoint + 조향 + step
         sg = QGroupBox(f'Speed setpoint  [±{max_spd:.1f} m/s]')
@@ -295,7 +298,7 @@ class BenchGui(QWidget):
             step_row.addWidget(btn)
         step_wrap = QWidget(); step_wrap.setLayout(step_row)
         sl.addWidget(step_wrap)
-        left.addWidget(sg)
+        la.addWidget(sg)
 
         # [좌] 텔레메트리
         tg = QGroupBox('Telemetry')
@@ -313,7 +316,7 @@ class BenchGui(QWidget):
         gl.addWidget(QLabel('meas speed'), 2, 0);    gl.addWidget(self.lbl_vmeas, 2, 1)
         gl.addWidget(QLabel('cmd current (bus)'), 3, 0); gl.addWidget(self.lbl_icmd, 3, 1)
         gl.addWidget(QLabel('motor current'), 4, 0); gl.addWidget(self.lbl_imot, 4, 1)
-        left.addWidget(tg)
+        la.addWidget(tg)
 
         # [우] PID gains (라이브)
         pg = QGroupBox('PID gains (live)')
@@ -328,9 +331,9 @@ class BenchGui(QWidget):
         pl.addWidget(QLabel('kd'), 2, 0); pl.addWidget(self.kd_w, 2, 1)
         self.lbl_pid = QLabel('PID node: (대기)')
         pl.addWidget(self.lbl_pid, 3, 0, 1, 2)
-        right.addWidget(pg)
+        lb.addWidget(pg)
 
-        # [우] 전류 캡 (라이브) — 가속/회생 실시간 조정
+        # 전류 캡 (라이브) — 가속/회생 실시간 조정
         capg = QGroupBox('Current limits (live)')
         capl = QGridLayout(capg)
         self.cmax_w, self.cmax_get, self.cmax_set, _ = labeled_slider(0, 100, 1.0, 'A', 0)
@@ -338,8 +341,7 @@ class BenchGui(QWidget):
         self.cmax_set(90.0); self.cmin_set(-55.0)   # 연결 시 노드값으로 동기됨
         capl.addWidget(QLabel('accel max (+)'), 0, 0); capl.addWidget(self.cmax_w, 0, 1)
         capl.addWidget(QLabel('regen min (−)'), 1, 0); capl.addWidget(self.cmin_w, 1, 1)
-        right.addWidget(capg)
-        right.addStretch(1)
+        lb.addWidget(capg)
 
         # ── E-STOP (전체폭) ──
         self.estop_btn = QPushButton('E-STOP  (0)')
@@ -350,14 +352,15 @@ class BenchGui(QWidget):
             'QPushButton{background:#c0392b;color:white;border-radius:6px;}'
             'QPushButton:pressed{background:#e74c3c;}')
         self.estop_btn.clicked.connect(self._estop)
-        root.addWidget(self.estop_btn)
+        lb.addWidget(self.estop_btn)
+        lb.addStretch(1); la.addStretch(1)   # 두 컬럼 위로 정렬
 
-        # ── 실시간 그래프 (전체폭, 목표/실측 속도 + 전류, 10초 창) ──
+        # ── 응답 그래프 (우측, 남는 폭 전부 — 넓게) ──
         chart_box = QGroupBox(f'Response  (최근 {PLOT_WINDOW:.0f}s)')
         cbl = QVBoxLayout(chart_box)
         self.chart = StripChart(v_range=max_spd, i_range=max_cur)
         cbl.addWidget(self.chart)
-        root.addWidget(chart_box)
+        cols.addWidget(chart_box, 1)     # stretch=1 → 우측 전체 차지(넓은 그래프)
 
         self._mode_changed()
 
