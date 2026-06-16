@@ -42,7 +42,7 @@ from collections import deque
 PID_NODE = 'speed_pid_to_current_node'
 PLOT_WINDOW = 10.0   # 그래프 시간창 [s]
 GAIN_DEFAULT = 3423.0
-SPEED_SIGN = -1.0  # m/s = SPEED_SIGN*state.speed/gain (vesc_to_odom 과 동일)
+SPEED_SIGN = 1.0  # m/s = SPEED_SIGN*state.speed/gain (HW 실측 2026-06-16: +current=전진 시 state.speed 양수)
 
 
 class Bridge(Node):
@@ -77,6 +77,14 @@ class Bridge(Node):
             Parameter('kp', Parameter.Type.DOUBLE, float(kp)),
             Parameter('ki', Parameter.Type.DOUBLE, float(ki)),
             Parameter('kd', Parameter.Type.DOUBLE, float(kd)),
+        ])
+
+    def set_enabled(self, flag):
+        """CURRENT 모드 진입 시 PID 노드를 꺼서(enabled=False) /commands/motor/current 충돌 방지."""
+        if not self.pclient.services_are_ready():
+            return
+        self.pclient.set_parameters([
+            Parameter('enabled', Parameter.Type.BOOL, bool(flag)),
         ])
 
     def fetch_gains(self):
@@ -376,6 +384,7 @@ class BenchGui(QWidget):
         self.cur_en(self.b.mode == 'current')
         self.spd_en(self.b.mode == 'speed')
         self.steer_en(self.b.mode == 'speed')
+        self.b.set_enabled(self.b.mode != 'current')
 
     def _estop(self):
         self.rb_idle.setChecked(True)

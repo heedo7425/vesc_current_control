@@ -7,7 +7,7 @@ speed_pid_to_current_node:
     # gain 은 active 설정(vesc_config.yaml)과 동일하게 3423.0 사용
     speed_to_erpm_gain: 3423.0
     speed_to_erpm_offset: 0.0
-    speed_sign: -1.0          # vesc_to_odom.cpp 의 -state.speed 와 부호 일치
+    speed_sign: 1.0           # 실측(HW 2026-06-16): +current=전진 시 state.speed 양수 → +1.0
 
     # PID gains — 벤치/실차에서 튜닝 (시작값, 보수적)
     kp: 8.0

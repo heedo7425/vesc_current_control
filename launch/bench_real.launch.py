@@ -59,7 +59,7 @@ def generate_launch_description():
         DeclareLaunchArgument('ki', default_value='6.0'),
         DeclareLaunchArgument('kd', default_value='0.0'),
         # ★부호 — 벤치에서 CURRENT 모드로 방향/피드백 확인 후 맞출 것 (어긋나면 폭주!)
-        DeclareLaunchArgument('speed_sign', default_value='-1.0',
+        DeclareLaunchArgument('speed_sign', default_value='1.0',
                               description='실측속도 부호. 앞으로 도는데 meas 가 음수면 +1.0 으로.'),
         DeclareLaunchArgument('current_sign', default_value='1.0',
                               description='전류부호↔진행방향. +전류가 후진이면 -1.0.'),
