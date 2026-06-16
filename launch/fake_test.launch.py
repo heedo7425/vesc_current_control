@@ -24,6 +24,8 @@ def generate_launch_description():
                 'current_max': 40.0,
                 'current_min': -20.0,   # 음전류(회생제동) 허용
                 'kp': 28.0, 'ki': 55.0, 'kd': 0.0,   # fake plant 기준 튜닝값
+                'speed_sign': 1.0,          # 실차/ fake_vesc 규약(전진=+eRPM)
+                'max_abs_speed': 8.0,       # sim 발산 안전망
             }],
         ),
     ])
