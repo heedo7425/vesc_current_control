@@ -38,7 +38,7 @@ class SpeedPidToCurrent(Node):
         # ── 변환/부호 ──
         self.gain = self.declare_parameter('speed_to_erpm_gain', 3423.0).value
         self.offset = self.declare_parameter('speed_to_erpm_offset', 0.0).value
-        self.speed_sign = self.declare_parameter('speed_sign', -1.0).value
+        self.speed_sign = self.declare_parameter('speed_sign', 1.0).value  # HW실측 2026-06-16: +current=전진 시 state.speed 양수
 
         # ── PID gains ──
         self.kp = self.declare_parameter('kp', 8.0).value
@@ -52,6 +52,7 @@ class SpeedPidToCurrent(Node):
 
         # ── 적분 anti-windup 한계 (전류 단위) ──
         self.integral_max = self.declare_parameter('integral_max', 30.0).value
+        self.enabled = self.declare_parameter('enabled', True).value
 
         # ── 제어 주기 / 안전 ──
         self.rate = self.declare_parameter('control_rate', 100.0).value
@@ -106,7 +107,13 @@ class SpeedPidToCurrent(Node):
                 'current_sign': 'current_sign', 'integral_max': 'integral_max',
                 'speed_sign': 'speed_sign', 'max_abs_speed': 'max_abs_speed'}
         for p in params:
-            if p.name in self._live:
+            if p.name == 'enabled':
+                new_en = bool(p.value)
+                if not new_en:
+                    self.integral = 0.0
+                    self.cur_pub.publish(Float64(data=0.0))
+                self.enabled = new_en
+            elif p.name in self._live:
                 setattr(self, attr[p.name], float(p.value))
         return SetParametersResult(successful=True)
 
@@ -127,6 +134,10 @@ class SpeedPidToCurrent(Node):
     # ── 100Hz PID ──
     def control_loop(self):
         now = self.get_clock().now()
+
+        # CURRENT 모드 등에서 GUI 가 PID 를 끄면(enabled=False) 발행 중단(명령 충돌 방지)
+        if not self.enabled:
+            return
 
         # 안전: cmd timeout → 정지
         timed_out = (self.last_cmd_time is None or

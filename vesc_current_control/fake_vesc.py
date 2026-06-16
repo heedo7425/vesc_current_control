@@ -37,7 +37,9 @@ class FakeVesc(Node):
     def tick(self):
         self.spd += (self.k_acc * self.cur - self.drag * self.spd) * self.dt
         m = VescStateStamped()
-        m.state.speed = -self.gain * self.spd   # m/s → eRPM (부호 -1, vesc_to_odom 일치)
+        # m/s → eRPM. HW 실측(2026-06-16) 규약: 전진 시 state.speed 양수 → +gain
+        # (노드 speed_sign=+1 과 일관. 부호 뒤집으면 fake 폐루프가 발산함)
+        m.state.speed = self.gain * self.spd
         m.state.current_motor = self.cur
         self.pub.publish(m)
 
