@@ -32,6 +32,9 @@ def generate_launch_description():
     kp = LaunchConfiguration('kp')
     ki = LaunchConfiguration('ki')
     kd = LaunchConfiguration('kd')
+    speed_sign = LaunchConfiguration('speed_sign')
+    current_sign = LaunchConfiguration('current_sign')
+    max_abs_speed = LaunchConfiguration('max_abs_speed')
 
     return LaunchDescription([
         # vesc_config: 시리얼 포트/servo/gain 등 vesc_driver 파라미터.
@@ -55,6 +58,14 @@ def generate_launch_description():
         DeclareLaunchArgument('kp', default_value='3.0'),
         DeclareLaunchArgument('ki', default_value='6.0'),
         DeclareLaunchArgument('kd', default_value='0.0'),
+        # ★부호 — 벤치에서 CURRENT 모드로 방향/피드백 확인 후 맞출 것 (어긋나면 폭주!)
+        DeclareLaunchArgument('speed_sign', default_value='-1.0',
+                              description='실측속도 부호. 앞으로 도는데 meas 가 음수면 +1.0 으로.'),
+        DeclareLaunchArgument('current_sign', default_value='1.0',
+                              description='전류부호↔진행방향. +전류가 후진이면 -1.0.'),
+        # ★폭주 안전가드: |실측속도| 가 이 값 초과면 전류 0 (부호 어긋남 시 휠 폭주 차단)
+        DeclareLaunchArgument('max_abs_speed', default_value='4.0',
+                              description='실측속도 절대값 한계[m/s]. 초과 시 전류 0. 0=비활성.'),
 
         # ── 진짜 VESC 드라이버 (시리얼). current_min/max override 로 회생 허용 ──
         Node(
@@ -73,8 +84,9 @@ def generate_launch_description():
                 'kp': kp, 'ki': ki, 'kd': kd,
                 'current_max': pid_imax, 'current_min': pid_imin,
                 'speed_to_erpm_gain': gain,
-                'speed_sign': -1.0,
-                'current_sign': 1.0,   # ★ 벤치에서 방향 확인 후 필요시 -1.0
+                'speed_sign': speed_sign,
+                'current_sign': current_sign,
+                'max_abs_speed': max_abs_speed,   # 폭주 가드
                 # servo 변환 (vesc_config 와 동일값)
                 'steering_angle_to_servo_gain': 0.5135,
                 'steering_angle_to_servo_offset': 0.445,

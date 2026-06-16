@@ -58,6 +58,9 @@ class SpeedPidToCurrent(Node):
         self.cmd_timeout = self.declare_parameter('cmd_timeout', 0.3).value
         # 목표가 이 속도[m/s] 미만이고 실측도 미만이면 PID 정지 후 0 전류
         self.stop_speed = self.declare_parameter('stop_speed_threshold', 0.05).value
+        # ★폭주 안전가드: 실측속도 |meas| 가 이 값[m/s] 초과면 전류 0 (0=비활성).
+        #   부호 어긋남 등으로 PID 가 전류를 max 로 밀어 휠이 폭주하는 것 차단.
+        self.max_abs_speed = self.declare_parameter('max_abs_speed', 0.0).value
 
         # ── 조향(servo) — 기존 ackermann_to_vesc 와 동일 변환 흡수 ──
         self.steer_gain = self.declare_parameter('steering_angle_to_servo_gain', 0.5135).value
@@ -71,6 +74,7 @@ class SpeedPidToCurrent(Node):
         self.meas_speed = 0.0
         self.integral = 0.0
         self.last_meas = 0.0
+        self._runaway_latched = False   # 폭주 가드 latch
         self.last_cmd_time = None
         self.have_feedback = False
 
@@ -87,7 +91,7 @@ class SpeedPidToCurrent(Node):
 
         # ── 런타임 파라미터 변경 콜백 (GUI 슬라이더 / ros2 param set 으로 라이브 튜닝) ──
         self._live = {'kp', 'ki', 'kd', 'current_max', 'current_min',
-                      'current_sign', 'integral_max'}
+                      'current_sign', 'integral_max', 'speed_sign', 'max_abs_speed'}
         self.add_on_set_parameters_callback(self._on_set_params)
 
         self.get_logger().info(
@@ -99,7 +103,8 @@ class SpeedPidToCurrent(Node):
     def _on_set_params(self, params):
         attr = {'kp': 'kp', 'ki': 'ki', 'kd': 'kd',
                 'current_max': 'current_max', 'current_min': 'current_min',
-                'current_sign': 'current_sign', 'integral_max': 'integral_max'}
+                'current_sign': 'current_sign', 'integral_max': 'integral_max',
+                'speed_sign': 'speed_sign', 'max_abs_speed': 'max_abs_speed'}
         for p in params:
             if p.name in self._live:
                 setattr(self, attr[p.name], float(p.value))
@@ -129,6 +134,25 @@ class SpeedPidToCurrent(Node):
         if timed_out or not self.have_feedback:
             self.integral = 0.0
             self.cur_pub.publish(Float64(data=0.0))
+            return
+
+        # ★폭주 안전가드 (latch): |실측속도| 가 한계 초과 → 전류 0 으로 래치.
+        #   목표를 0(정지/E-STOP)으로 내릴 때까지 0 유지 → chatter 없이 안전 정지.
+        if self._runaway_latched:
+            self.integral = 0.0
+            self.cur_pub.publish(Float64(data=0.0))
+            if abs(self.target_speed) < self.stop_speed:
+                self._runaway_latched = False
+                self.get_logger().warn('RUNAWAY GUARD 해제 (목표 0). speed_sign 확인 후 재시도.')
+            return
+        if self.max_abs_speed > 0.0 and abs(self.meas_speed) > self.max_abs_speed:
+            self._runaway_latched = True
+            self.integral = 0.0
+            self.cur_pub.publish(Float64(data=0.0))
+            self.get_logger().warn(
+                f'RUNAWAY GUARD 발동: |meas|={abs(self.meas_speed):.1f} > '
+                f'{self.max_abs_speed:.1f} m/s → 전류 0 LATCH. speed_sign 어긋남 의심! '
+                f'CURRENT 모드로 방향 확인 후 speed_sign 뒤집을 것. (목표 0 으로 내리면 해제)')
             return
 
         # 완전 정지 의도 → PID 끄고 0 전류 (브레이크는 별도 정책)
