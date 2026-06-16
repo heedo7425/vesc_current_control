@@ -87,14 +87,23 @@ class Bridge(Node):
             Parameter('enabled', Parameter.Type.BOOL, bool(flag)),
         ])
 
-    def fetch_gains(self):
-        """노드의 현재 kp/ki/kd 를 비동기로 읽어옴 (연결 시 1회, 노드=source of truth).
+    def set_caps(self, cmax, cmin):
+        """PID 노드 전류 캡(가속/회생) 라이브 set."""
+        if not self.pclient.services_are_ready():
+            return
+        self.pclient.set_parameters([
+            Parameter('current_max', Parameter.Type.DOUBLE, float(cmax)),
+            Parameter('current_min', Parameter.Type.DOUBLE, float(cmin)),
+        ])
+
+    def fetch_tunables(self):
+        """노드의 kp/ki/kd + current_max/min 을 비동기로 읽어옴 (연결 시 1회, 노드=source of truth).
         준비 안 됐으면 None."""
         if not self.pclient.services_are_ready():
             self.pid_online = False
             return None
         self.pid_online = True
-        return self.pclient.get_parameters(['kp', 'ki', 'kd'])
+        return self.pclient.get_parameters(['kp', 'ki', 'kd', 'current_max', 'current_min'])
 
     def _state_cb(self, m):
         self.meas_speed = SPEED_SIGN * m.state.speed / self.gain
@@ -232,10 +241,10 @@ class BenchGui(QWidget):
         super().__init__()
         self.b = bridge
         self.setWindowTitle('VESC Current Control — Bench')
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(860)
         root = QVBoxLayout(self)
 
-        # ── 모드 선택 ──
+        # ── 모드 선택 (상단 전체폭) ──
         mode_box = QGroupBox('Mode')
         ml = QHBoxLayout(mode_box)
         self.rb_idle = QRadioButton('IDLE')
@@ -250,21 +259,26 @@ class BenchGui(QWidget):
         self.rb_spd.toggled.connect(self._mode_changed)
         root.addWidget(mode_box)
 
-        # ── 전류 슬라이더 ──
-        cg = QGroupBox(f'Current  [±{max_cur:.0f} A]')
+        # ── 2단 본문 (좌: 주행입력+텔레, 우: 튜닝) — 세로 길이 축소 ──
+        cols = QHBoxLayout()
+        left = QVBoxLayout(); right = QVBoxLayout()
+        cols.addLayout(left, 1); cols.addLayout(right, 1)
+        root.addLayout(cols)
+
+        # [좌] 전류 직접 명령 슬라이더
+        cg = QGroupBox(f'Current command  [±{max_cur:.0f} A]')
         cl = QVBoxLayout(cg)
         self.cur_w, self.cur_get, self.cur_set, self.cur_en = \
             labeled_slider(-max_cur, max_cur, 0.5, 'A', 1)
         cl.addWidget(self.cur_w)
-        root.addWidget(cg)
+        left.addWidget(cg)
 
-        # ── 속도 슬라이더 ──
+        # [좌] 속도 setpoint + 조향 + step
         sg = QGroupBox(f'Speed setpoint  [±{max_spd:.1f} m/s]')
         sl = QVBoxLayout(sg)
         self.spd_w, self.spd_get, self.spd_set, self.spd_en = \
             labeled_slider(-max_spd, max_spd, 0.05, 'm/s', 2)
         sl.addWidget(self.spd_w)
-        # 조향
         st_row = QHBoxLayout()
         st_row.addWidget(QLabel('Steering'))
         self.steer_w, self.steer_get, self.steer_set, self.steer_en = \
@@ -272,7 +286,6 @@ class BenchGui(QWidget):
         st_row.addWidget(self.steer_w)
         st_wrap = QWidget(); st_wrap.setLayout(st_row)
         sl.addWidget(st_wrap)
-        # step 프리셋 버튼 (깔끔한 step 입력 → 응답 관찰용)
         step_row = QHBoxLayout()
         step_row.addWidget(QLabel('step →'))
         for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
@@ -282,35 +295,9 @@ class BenchGui(QWidget):
             step_row.addWidget(btn)
         step_wrap = QWidget(); step_wrap.setLayout(step_row)
         sl.addWidget(step_wrap)
-        root.addWidget(sg)
+        left.addWidget(sg)
 
-        # ── PID gains (라이브 튜닝) ──
-        pg = QGroupBox('PID gains (live → speed_pid_to_current_node)')
-        pl = QGridLayout(pg)
-        kp0, ki0, kd0 = gains
-        self.kp_w, self.kp_get, self.kp_set, _ = labeled_slider(0, 50, 0.5, '', 1)
-        self.ki_w, self.ki_get, self.ki_set, _ = labeled_slider(0, 100, 1.0, '', 1)
-        self.kd_w, self.kd_get, self.kd_set, _ = labeled_slider(0, 5, 0.1, '', 2)
-        self.kp_set(kp0); self.ki_set(ki0); self.kd_set(kd0)
-        pl.addWidget(QLabel('kp'), 0, 0); pl.addWidget(self.kp_w, 0, 1)
-        pl.addWidget(QLabel('ki'), 1, 0); pl.addWidget(self.ki_w, 1, 1)
-        pl.addWidget(QLabel('kd'), 2, 0); pl.addWidget(self.kd_w, 2, 1)
-        self.lbl_pid = QLabel('PID node: (대기)')
-        pl.addWidget(self.lbl_pid, 3, 0, 1, 2)
-        root.addWidget(pg)
-
-        # ── E-STOP ──
-        self.estop_btn = QPushButton('E-STOP  (0)')
-        self.estop_btn.setMinimumHeight(54)
-        f = QFont(); f.setPointSize(16); f.setBold(True)
-        self.estop_btn.setFont(f)
-        self.estop_btn.setStyleSheet(
-            'QPushButton{background:#c0392b;color:white;border-radius:6px;}'
-            'QPushButton:pressed{background:#e74c3c;}')
-        self.estop_btn.clicked.connect(self._estop)
-        root.addWidget(self.estop_btn)
-
-        # ── 텔레메트리 ──
+        # [좌] 텔레메트리
         tg = QGroupBox('Telemetry')
         gl = QGridLayout(tg)
         self.lbl_mode = QLabel('IDLE')
@@ -326,9 +313,46 @@ class BenchGui(QWidget):
         gl.addWidget(QLabel('meas speed'), 2, 0);    gl.addWidget(self.lbl_vmeas, 2, 1)
         gl.addWidget(QLabel('cmd current (bus)'), 3, 0); gl.addWidget(self.lbl_icmd, 3, 1)
         gl.addWidget(QLabel('motor current'), 4, 0); gl.addWidget(self.lbl_imot, 4, 1)
-        root.addWidget(tg)
+        left.addWidget(tg)
 
-        # ── 실시간 그래프 (목표/실측 속도 + 전류, 10초 창) ──
+        # [우] PID gains (라이브)
+        pg = QGroupBox('PID gains (live)')
+        pl = QGridLayout(pg)
+        kp0, ki0, kd0 = gains
+        self.kp_w, self.kp_get, self.kp_set, _ = labeled_slider(0, 50, 0.5, '', 1)
+        self.ki_w, self.ki_get, self.ki_set, _ = labeled_slider(0, 100, 1.0, '', 1)
+        self.kd_w, self.kd_get, self.kd_set, _ = labeled_slider(0, 5, 0.1, '', 2)
+        self.kp_set(kp0); self.ki_set(ki0); self.kd_set(kd0)
+        pl.addWidget(QLabel('kp'), 0, 0); pl.addWidget(self.kp_w, 0, 1)
+        pl.addWidget(QLabel('ki'), 1, 0); pl.addWidget(self.ki_w, 1, 1)
+        pl.addWidget(QLabel('kd'), 2, 0); pl.addWidget(self.kd_w, 2, 1)
+        self.lbl_pid = QLabel('PID node: (대기)')
+        pl.addWidget(self.lbl_pid, 3, 0, 1, 2)
+        right.addWidget(pg)
+
+        # [우] 전류 캡 (라이브) — 가속/회생 실시간 조정
+        capg = QGroupBox('Current limits (live)')
+        capl = QGridLayout(capg)
+        self.cmax_w, self.cmax_get, self.cmax_set, _ = labeled_slider(0, 100, 1.0, 'A', 0)
+        self.cmin_w, self.cmin_get, self.cmin_set, _ = labeled_slider(-60, 0, 1.0, 'A', 0)
+        self.cmax_set(90.0); self.cmin_set(-55.0)   # 연결 시 노드값으로 동기됨
+        capl.addWidget(QLabel('accel max (+)'), 0, 0); capl.addWidget(self.cmax_w, 0, 1)
+        capl.addWidget(QLabel('regen min (−)'), 1, 0); capl.addWidget(self.cmin_w, 1, 1)
+        right.addWidget(capg)
+        right.addStretch(1)
+
+        # ── E-STOP (전체폭) ──
+        self.estop_btn = QPushButton('E-STOP  (0)')
+        self.estop_btn.setMinimumHeight(48)
+        f = QFont(); f.setPointSize(16); f.setBold(True)
+        self.estop_btn.setFont(f)
+        self.estop_btn.setStyleSheet(
+            'QPushButton{background:#c0392b;color:white;border-radius:6px;}'
+            'QPushButton:pressed{background:#e74c3c;}')
+        self.estop_btn.clicked.connect(self._estop)
+        root.addWidget(self.estop_btn)
+
+        # ── 실시간 그래프 (전체폭, 목표/실측 속도 + 전류, 10초 창) ──
         chart_box = QGroupBox(f'Response  (최근 {PLOT_WINDOW:.0f}s)')
         cbl = QVBoxLayout(chart_box)
         self.chart = StripChart(v_range=max_spd, i_range=max_cur)
@@ -353,21 +377,24 @@ class BenchGui(QWidget):
         if not rclpy.ok():
             return
         if not self._gain_synced:
-            # 1) 연결되면 노드의 현재 kp/ki/kd 를 읽어와 슬라이더에 반영
+            # 1) 연결되면 노드의 현재 kp/ki/kd + 전류캡 을 읽어와 슬라이더에 반영
             if self._gain_future is None:
-                self._gain_future = self.b.fetch_gains()
+                self._gain_future = self.b.fetch_tunables()
             elif self._gain_future.done():
                 try:
                     vals = self._gain_future.result().values
                     self.kp_set(vals[0].double_value)
                     self.ki_set(vals[1].double_value)
                     self.kd_set(vals[2].double_value)
+                    self.cmax_set(vals[3].double_value)
+                    self.cmin_set(vals[4].double_value)
                 except Exception:
                     pass
                 self._gain_synced = True
             return
-        # 2) 동기 후엔 슬라이더값을 노드에 push (사용자가 움직이면 반영)
+        # 2) 동기 후엔 슬라이더값(게인+전류캡)을 노드에 push (사용자가 움직이면 반영)
         self.b.set_gains(self.kp_get(), self.ki_get(), self.kd_get())
+        self.b.set_caps(self.cmax_get(), self.cmin_get())
 
     def _step_speed(self, val):
         """프리셋 버튼: SPEED 모드로 전환하고 목표속도를 즉시 val 로 (깔끔한 step)."""
@@ -458,7 +485,8 @@ def main():
     scroll.setWindowTitle('VESC Current Control — Bench')
     avail = app.primaryScreen().availableGeometry()
     want_h = gui.sizeHint().height() + 4
-    scroll.resize(min(600, avail.width() - 40),
+    want_w = gui.sizeHint().width() + 24
+    scroll.resize(min(want_w, avail.width() - 40),
                   min(want_h, avail.height() - 60))
     scroll.show()
     app.aboutToQuit.connect(bridge.estop)   # 창 닫힘 시 0 (gui.closeEvent 대체)
