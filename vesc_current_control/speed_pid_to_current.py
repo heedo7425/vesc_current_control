@@ -64,6 +64,8 @@ class SpeedPidToCurrent(Node):
         # ★폭주 안전가드: 실측속도 |meas| 가 이 값[m/s] 초과면 전류 0 (0=비활성).
         #   부호 어긋남 등으로 PID 가 전류를 max 로 밀어 휠이 폭주하는 것 차단.
         self.max_abs_speed = self.declare_parameter('max_abs_speed', 0.0).value
+        # ★정지 제동: 목표 0인데 아직 구르면 이 brake 전류[A] 로 강제동 (0=비활성=회생만).
+        self.stop_brake_current = self.declare_parameter('stop_brake_current', 0.0).value
 
         # ── 조향(servo) — 기존 ackermann_to_vesc 와 동일 변환 흡수 ──
         self.steer_gain = self.declare_parameter('steering_angle_to_servo_gain', 0.5135).value
@@ -83,6 +85,7 @@ class SpeedPidToCurrent(Node):
 
         # ── I/O ──
         self.cur_pub = self.create_publisher(Float64, 'commands/motor/current', 10)
+        self.brake_pub = self.create_publisher(Float64, 'commands/motor/brake', 10)
         self.servo_pub = self.create_publisher(Float64, 'commands/servo/position', 10)
         self.create_subscription(AckermannDriveStamped, 'ackermann_cmd',
                                  self.cmd_cb, 10)
@@ -94,20 +97,23 @@ class SpeedPidToCurrent(Node):
 
         # ── 런타임 파라미터 변경 콜백 (GUI 슬라이더 / ros2 param set 으로 라이브 튜닝) ──
         self._live = {'kp', 'ki', 'kd', 'current_max', 'current_min',
-                      'current_sign', 'integral_max', 'speed_sign', 'max_abs_speed'}
+                      'current_sign', 'integral_max', 'speed_sign', 'max_abs_speed',
+                      'stop_brake_current'}
         self.add_on_set_parameters_callback(self._on_set_params)
 
         self.get_logger().info(
             f'speed_pid_to_current up: kp={self.kp} ki={self.ki} kd={self.kd} '
             f'I[{self.current_min},{self.current_max}]A gain={self.gain} '
-            f'sign(spd={self.speed_sign},cur={self.current_sign}) rate={self.rate}Hz')
+            f'sign(spd={self.speed_sign},cur={self.current_sign}) rate={self.rate}Hz '
+            f'stop_brake={self.stop_brake_current}A')
 
     # ── 런타임 파라미터 변경 → 내부 상태 즉시 반영 ──
     def _on_set_params(self, params):
         attr = {'kp': 'kp', 'ki': 'ki', 'kd': 'kd',
                 'current_max': 'current_max', 'current_min': 'current_min',
                 'current_sign': 'current_sign', 'integral_max': 'integral_max',
-                'speed_sign': 'speed_sign', 'max_abs_speed': 'max_abs_speed'}
+                'speed_sign': 'speed_sign', 'max_abs_speed': 'max_abs_speed',
+                'stop_brake_current': 'stop_brake_current'}
         for p in params:
             if p.name == 'enabled':
                 new_en = bool(p.value)
@@ -168,6 +174,13 @@ class SpeedPidToCurrent(Node):
                 f'CURRENT 모드로 방향 확인 후 speed_sign 뒤집을 것. (목표 0 으로 내리면 해제)')
             return
 
+        # ★정지 제동(opt-in): 목표 0인데 아직 구르면 brake 로 강제동 (회생보다 강하고 저속서도 잡힘)
+        if (self.stop_brake_current > 0.0 and abs(self.target_speed) < self.stop_speed
+                and abs(self.meas_speed) >= self.stop_speed):
+            self.integral = 0.0
+            self.last_meas = self.meas_speed
+            self.brake_pub.publish(Float64(data=self.stop_brake_current))
+            return
         # 완전 정지 의도 → PID 끄고 0 전류 (브레이크는 별도 정책)
         if abs(self.target_speed) < self.stop_speed and abs(self.meas_speed) < self.stop_speed:
             self.integral = 0.0
